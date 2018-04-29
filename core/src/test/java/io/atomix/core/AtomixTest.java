@@ -179,7 +179,7 @@ public class AtomixTest extends AbstractAtomixTest {
    * Tests a client joining and leaving the cluster.
    */
   @Test
-  public void testClientJoinLeaveCore() throws Exception {
+  public void testClientJoinLeavePersistent() throws Exception {
     List<CompletableFuture<Atomix>> futures = new ArrayList<>();
     futures.add(startAtomix(Member.Type.PERSISTENT, 1, Arrays.asList(1, 2, 3), Profile.CONSENSUS));
     futures.add(startAtomix(Member.Type.PERSISTENT, 2, Arrays.asList(1, 2, 3), Profile.CONSENSUS));
