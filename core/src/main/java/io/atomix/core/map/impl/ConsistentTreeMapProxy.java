@@ -63,15 +63,14 @@ import static io.atomix.core.map.impl.ConsistentTreeMapOperations.LOWER_KEY;
 public class ConsistentTreeMapProxy extends ConsistentMapProxy implements AsyncConsistentTreeMap<byte[]> {
   private static final Serializer SERIALIZER = Serializer.using(KryoNamespace.builder()
       .register(KryoNamespaces.BASIC)
-      .register(ConsistentMapOperations.NAMESPACE)
       .register(ConsistentTreeMapOperations.NAMESPACE)
       .register(ConsistentMapEvents.NAMESPACE)
       .nextId(KryoNamespaces.BEGIN_USER_CUSTOM_ID + 150)
-      .register(ConsistentMapService.TransactionScope.class)
+      .register(DefaultConsistentMapService.TransactionScope.class)
       .register(TransactionLog.class)
       .register(TransactionId.class)
-      .register(ConsistentMapService.MapEntryValue.class)
-      .register(ConsistentMapService.MapEntryValue.Type.class)
+      .register(DefaultConsistentMapService.MapEntryValue.class)
+      .register(DefaultConsistentMapService.MapEntryValue.Type.class)
       .register(new HashMap().keySet().getClass())
       .register(TreeMap.class)
       .build());

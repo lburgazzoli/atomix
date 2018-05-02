@@ -19,37 +19,19 @@ import com.google.common.base.Throwables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import io.atomix.core.map.ConsistentMapService;
+import io.atomix.core.map.ConsistentMapType;
 import io.atomix.core.map.MapEvent;
-import io.atomix.core.map.impl.ConsistentMapOperations.ContainsKey;
-import io.atomix.core.map.impl.ConsistentMapOperations.ContainsValue;
-import io.atomix.core.map.impl.ConsistentMapOperations.Get;
-import io.atomix.core.map.impl.ConsistentMapOperations.GetAllPresent;
-import io.atomix.core.map.impl.ConsistentMapOperations.GetOrDefault;
-import io.atomix.core.map.impl.ConsistentMapOperations.Put;
-import io.atomix.core.map.impl.ConsistentMapOperations.Remove;
-import io.atomix.core.map.impl.ConsistentMapOperations.RemoveValue;
-import io.atomix.core.map.impl.ConsistentMapOperations.RemoveVersion;
-import io.atomix.core.map.impl.ConsistentMapOperations.Replace;
-import io.atomix.core.map.impl.ConsistentMapOperations.ReplaceValue;
-import io.atomix.core.map.impl.ConsistentMapOperations.ReplaceVersion;
-import io.atomix.core.map.impl.ConsistentMapOperations.TransactionBegin;
-import io.atomix.core.map.impl.ConsistentMapOperations.TransactionCommit;
-import io.atomix.core.map.impl.ConsistentMapOperations.TransactionPrepare;
-import io.atomix.core.map.impl.ConsistentMapOperations.TransactionPrepareAndCommit;
-import io.atomix.core.map.impl.ConsistentMapOperations.TransactionRollback;
 import io.atomix.core.map.impl.MapUpdate.Type;
 import io.atomix.core.transaction.TransactionId;
 import io.atomix.core.transaction.TransactionLog;
 import io.atomix.primitive.service.AbstractPrimitiveService;
 import io.atomix.primitive.service.BackupInput;
 import io.atomix.primitive.service.BackupOutput;
-import io.atomix.primitive.service.Commit;
 import io.atomix.primitive.service.ServiceConfig;
-import io.atomix.primitive.service.ServiceExecutor;
 import io.atomix.primitive.session.PrimitiveSession;
 import io.atomix.utils.concurrent.Scheduled;
 import io.atomix.utils.serializer.KryoNamespace;
-import io.atomix.utils.serializer.KryoNamespaces;
 import io.atomix.utils.serializer.Serializer;
 import io.atomix.utils.time.Versioned;
 
@@ -67,60 +49,27 @@ import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkState;
 import static io.atomix.core.map.impl.ConsistentMapEvents.CHANGE;
-import static io.atomix.core.map.impl.ConsistentMapOperations.ADD_LISTENER;
-import static io.atomix.core.map.impl.ConsistentMapOperations.BEGIN;
-import static io.atomix.core.map.impl.ConsistentMapOperations.CLEAR;
-import static io.atomix.core.map.impl.ConsistentMapOperations.COMMIT;
-import static io.atomix.core.map.impl.ConsistentMapOperations.CONTAINS_KEY;
-import static io.atomix.core.map.impl.ConsistentMapOperations.CONTAINS_VALUE;
-import static io.atomix.core.map.impl.ConsistentMapOperations.ENTRY_SET;
-import static io.atomix.core.map.impl.ConsistentMapOperations.GET;
-import static io.atomix.core.map.impl.ConsistentMapOperations.GET_ALL_PRESENT;
-import static io.atomix.core.map.impl.ConsistentMapOperations.GET_OR_DEFAULT;
-import static io.atomix.core.map.impl.ConsistentMapOperations.IS_EMPTY;
-import static io.atomix.core.map.impl.ConsistentMapOperations.KEY_SET;
-import static io.atomix.core.map.impl.ConsistentMapOperations.PREPARE;
-import static io.atomix.core.map.impl.ConsistentMapOperations.PREPARE_AND_COMMIT;
-import static io.atomix.core.map.impl.ConsistentMapOperations.PUT;
-import static io.atomix.core.map.impl.ConsistentMapOperations.PUT_AND_GET;
-import static io.atomix.core.map.impl.ConsistentMapOperations.PUT_IF_ABSENT;
-import static io.atomix.core.map.impl.ConsistentMapOperations.REMOVE;
-import static io.atomix.core.map.impl.ConsistentMapOperations.REMOVE_LISTENER;
-import static io.atomix.core.map.impl.ConsistentMapOperations.REMOVE_VALUE;
-import static io.atomix.core.map.impl.ConsistentMapOperations.REMOVE_VERSION;
-import static io.atomix.core.map.impl.ConsistentMapOperations.REPLACE;
-import static io.atomix.core.map.impl.ConsistentMapOperations.REPLACE_VALUE;
-import static io.atomix.core.map.impl.ConsistentMapOperations.REPLACE_VERSION;
-import static io.atomix.core.map.impl.ConsistentMapOperations.ROLLBACK;
-import static io.atomix.core.map.impl.ConsistentMapOperations.SIZE;
-import static io.atomix.core.map.impl.ConsistentMapOperations.VALUES;
 
 /**
  * State Machine for {@link ConsistentMapProxy} resource.
  */
-public class ConsistentMapService extends AbstractPrimitiveService {
-
-  private static final Serializer SERIALIZER = Serializer.using(KryoNamespace.builder()
-      .register(KryoNamespaces.BASIC)
-      .register(ConsistentMapOperations.NAMESPACE)
-      .register(ConsistentMapEvents.NAMESPACE)
-      .nextId(KryoNamespaces.BEGIN_USER_CUSTOM_ID + 100)
-      .register(TransactionScope.class)
-      .register(TransactionLog.class)
-      .register(TransactionId.class)
-      .register(MapEntryValue.class)
-      .register(MapEntryValue.Type.class)
-      .register(new HashMap().keySet().getClass())
-      .build());
-
+public class DefaultConsistentMapService extends AbstractPrimitiveService implements ConsistentMapService {
+  private final Serializer serializer;
   protected Map<Long, PrimitiveSession> listeners = new LinkedHashMap<>();
   private Map<String, MapEntryValue> map;
   protected Set<String> preparedKeys = Sets.newHashSet();
   protected Map<TransactionId, TransactionScope> activeTransactions = Maps.newHashMap();
   protected long currentVersion;
 
-  public ConsistentMapService(ServiceConfig config) {
-    super(config);
+  public DefaultConsistentMapService(ServiceConfig config) {
+    super(ConsistentMapService.class, config);
+    serializer = Serializer.using(KryoNamespace.builder()
+        .register((KryoNamespace) ConsistentMapType.instance().namespace())
+        .register(TransactionScope.class)
+        .register(MapEntryValue.class)
+        .register(MapEntryValue.Type.class)
+        .register(new HashMap().keySet().getClass())
+        .build());
     map = createMap();
   }
 
@@ -134,7 +83,7 @@ public class ConsistentMapService extends AbstractPrimitiveService {
 
   @Override
   public Serializer serializer() {
-    return SERIALIZER;
+    return serializer;
   }
 
   @Override
@@ -167,153 +116,74 @@ public class ConsistentMapService extends AbstractPrimitiveService {
   }
 
   @Override
-  protected void configure(ServiceExecutor executor) {
-    // Listeners
-    executor.register(ADD_LISTENER, (Commit<Void> c) -> listen(c.session()));
-    executor.register(REMOVE_LISTENER, (Commit<Void> c) -> unlisten(c.session()));
-    // Queries
-    executor.register(CONTAINS_KEY, this::containsKey);
-    executor.register(CONTAINS_VALUE, this::containsValue);
-    executor.register(ENTRY_SET, (Commit<Void> c) -> entrySet());
-    executor.register(GET, this::get);
-    executor.register(GET_ALL_PRESENT, this::getAllPresent);
-    executor.register(GET_OR_DEFAULT, this::getOrDefault);
-    executor.register(IS_EMPTY, (Commit<Void> c) -> isEmpty());
-    executor.register(KEY_SET, (Commit<Void> c) -> keySet());
-    executor.register(SIZE, (Commit<Void> c) -> size());
-    executor.register(VALUES, (Commit<Void> c) -> values());
-    // Commands
-    executor.register(PUT, this::put);
-    executor.register(PUT_IF_ABSENT, this::putIfAbsent);
-    executor.register(PUT_AND_GET, this::putAndGet);
-    executor.register(REMOVE, this::remove);
-    executor.register(REMOVE_VALUE, this::removeValue);
-    executor.register(REMOVE_VERSION, this::removeVersion);
-    executor.register(REPLACE, this::replace);
-    executor.register(REPLACE_VALUE, this::replaceValue);
-    executor.register(REPLACE_VERSION, this::replaceVersion);
-    executor.register(CLEAR, (Commit<Void> c) -> clear());
-    executor.register(BEGIN, this::begin);
-    executor.register(PREPARE, this::prepare);
-    executor.register(PREPARE_AND_COMMIT, this::prepareAndCommit);
-    executor.register(COMMIT, this::commit);
-    executor.register(ROLLBACK, this::rollback);
-  }
-
-  /**
-   * Handles a contains key commit.
-   *
-   * @param commit containsKey commit
-   * @return {@code true} if map contains key
-   */
-  protected boolean containsKey(Commit<? extends ContainsKey> commit) {
-    MapEntryValue value = entries().get(commit.value().key());
+  public boolean containsKey(String key) {
+    MapEntryValue value = entries().get(key);
     return value != null && value.type() != MapEntryValue.Type.TOMBSTONE;
   }
 
-  /**
-   * Handles a contains value commit.
-   *
-   * @param commit containsValue commit
-   * @return {@code true} if map contains value
-   */
-  protected boolean containsValue(Commit<? extends ContainsValue> commit) {
+  @Override
+  public boolean containsValue(byte[] value) {
     return entries().values().stream()
-        .filter(value -> value.type() != MapEntryValue.Type.TOMBSTONE)
-        .anyMatch(value -> Arrays.equals(value.value, commit.value().value()));
+        .filter(v -> v.type() != MapEntryValue.Type.TOMBSTONE)
+        .anyMatch(v -> Arrays.equals(v.value, value));
   }
 
-  /**
-   * Handles a get commit.
-   *
-   * @param commit get commit
-   * @return value mapped to key
-   */
-  protected Versioned<byte[]> get(Commit<? extends Get> commit) {
-    return toVersioned(entries().get(commit.value().key()));
+  @Override
+  public Versioned<byte[]> get(String key) {
+    return toVersioned(entries().get(key));
   }
 
-  /**
-   * Handles a get all present commit.
-   *
-   * @param commit get all present commit
-   * @return keys present in map
-   */
-  protected Map<String, Versioned<byte[]>> getAllPresent(Commit<? extends GetAllPresent> commit) {
+  @Override
+  public Map<String, Versioned<byte[]>> getAllPresent(Set<String> keys) {
     return entries().entrySet().stream()
         .filter(entry -> entry.getValue().type() != MapEntryValue.Type.TOMBSTONE
-            && commit.value().keys().contains(entry.getKey()))
+            && keys.contains(entry.getKey()))
         .collect(Collectors.toMap(Map.Entry::getKey, o -> toVersioned(o.getValue())));
   }
 
-  /**
-   * Handles a get or default commit.
-   *
-   * @param commit get or default commit
-   * @return value mapped to key
-   */
-  protected Versioned<byte[]> getOrDefault(Commit<? extends GetOrDefault> commit) {
-    MapEntryValue value = entries().get(commit.value().key());
+  @Override
+  public Versioned<byte[]> getOrDefault(String key, byte[] defaultValue) {
+    MapEntryValue value = entries().get(key);
     if (value == null) {
-      return new Versioned<>(commit.value().defaultValue(), 0);
+      return new Versioned<>(defaultValue, 0);
     } else if (value.type() == MapEntryValue.Type.TOMBSTONE) {
-      return new Versioned<>(commit.value().defaultValue(), value.version);
+      return new Versioned<>(defaultValue, value.version);
     } else {
       return new Versioned<>(value.value(), value.version);
     }
   }
 
-  /**
-   * Handles a size commit.
-   *
-   * @return number of entries in map
-   */
-  protected int size() {
+  @Override
+  public int size() {
     return (int) entries().values().stream()
         .filter(value -> value.type() != MapEntryValue.Type.TOMBSTONE)
         .count();
   }
 
-  /**
-   * Handles an is empty commit.
-   *
-   * @return {@code true} if map is empty
-   */
-  protected boolean isEmpty() {
+  @Override
+  public boolean isEmpty() {
     return entries().values().stream()
         .noneMatch(value -> value.type() != MapEntryValue.Type.TOMBSTONE);
   }
 
-  /**
-   * Handles a keySet commit.
-   *
-   * @return set of keys in map
-   */
-  protected Set<String> keySet() {
+  @Override
+  public Set<String> keySet() {
     return entries().entrySet().stream()
         .filter(entry -> entry.getValue().type() != MapEntryValue.Type.TOMBSTONE)
         .map(Map.Entry::getKey)
         .collect(Collectors.toSet());
   }
 
-  /**
-   * Handles a values commit.
-   *
-   * @return collection of values in map
-   */
-  protected Collection<Versioned<byte[]>> values() {
+  @Override
+  public Collection<Versioned<byte[]>> values() {
     return entries().entrySet().stream()
         .filter(entry -> entry.getValue().type() != MapEntryValue.Type.TOMBSTONE)
         .map(entry -> toVersioned(entry.getValue()))
         .collect(Collectors.toList());
   }
 
-  /**
-   * Handles a entry set commit.
-   *
-   * @return set of map entries
-   */
-  protected Set<Map.Entry<String, Versioned<byte[]>>> entrySet() {
+  @Override
+  public Set<Map.Entry<String, Versioned<byte[]>>> entrySet() {
     return entries().entrySet().stream()
         .filter(entry -> entry.getValue().type() != MapEntryValue.Type.TOMBSTONE)
         .map(e -> Maps.immutableEntry(e.getKey(), toVersioned(e.getValue())))
@@ -391,21 +261,15 @@ public class ConsistentMapService extends AbstractPrimitiveService {
     }
   }
 
-  /**
-   * Handles a put commit.
-   *
-   * @param commit put commit
-   * @return map entry update result
-   */
-  protected MapEntryUpdateResult<String, byte[]> put(Commit<? extends Put> commit) {
-    String key = commit.value().key();
+  @Override
+  public MapEntryUpdateResult<String, byte[]> put(String key, byte[] value, long ttl) {
     MapEntryValue oldValue = entries().get(key);
     MapEntryValue newValue = new MapEntryValue(
         MapEntryValue.Type.VALUE,
-        commit.index(),
-        commit.value().value(),
-        commit.wallClockTime().unixTimestamp(),
-        commit.value().ttl());
+        getCurrentIndex(),
+        value,
+        getWallClock().getTime().unixTimestamp(),
+        ttl);
 
     // If the value is null or a tombstone, this is an insert.
     // Otherwise, only update the value if it has changed to reduce the number of events.
@@ -414,40 +278,34 @@ public class ConsistentMapService extends AbstractPrimitiveService {
       if (preparedKeys.contains(key)) {
         return new MapEntryUpdateResult<>(
             MapEntryUpdateResult.Status.WRITE_LOCK,
-            commit.index(),
+            getCurrentIndex(),
             key,
             toVersioned(oldValue));
       }
-      putValue(commit.value().key(), newValue);
+      putValue(key, newValue);
       Versioned<byte[]> result = toVersioned(oldValue);
       publish(new MapEvent<>(MapEvent.Type.INSERT, "", key, toVersioned(newValue), result));
-      return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, commit.index(), key, result);
+      return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, getCurrentIndex(), key, result);
     } else if (!valuesEqual(oldValue, newValue)) {
       // If the key has been locked by a transaction, return a WRITE_LOCK error.
       if (preparedKeys.contains(key)) {
         return new MapEntryUpdateResult<>(
             MapEntryUpdateResult.Status.WRITE_LOCK,
-            commit.index(),
+            getCurrentIndex(),
             key,
             toVersioned(oldValue));
       }
-      putValue(commit.value().key(), newValue);
+      putValue(key, newValue);
       Versioned<byte[]> result = toVersioned(oldValue);
       publish(new MapEvent<>(MapEvent.Type.UPDATE, "", key, toVersioned(newValue), result));
-      return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, commit.index(), key, result);
+      return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, getCurrentIndex(), key, result);
     }
     // If the value hasn't changed, return a NOOP result.
-    return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.NOOP, commit.index(), key, toVersioned(oldValue));
+    return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.NOOP, getCurrentIndex(), key, toVersioned(oldValue));
   }
 
-  /**
-   * Handles a putIfAbsent commit.
-   *
-   * @param commit putIfAbsent commit
-   * @return map entry update result
-   */
-  protected MapEntryUpdateResult<String, byte[]> putIfAbsent(Commit<? extends Put> commit) {
-    String key = commit.value().key();
+  @Override
+  public MapEntryUpdateResult<String, byte[]> putIfAbsent(String key, byte[] value, long ttl) {
     MapEntryValue oldValue = entries().get(key);
 
     // If the value is null, this is an INSERT.
@@ -456,38 +314,32 @@ public class ConsistentMapService extends AbstractPrimitiveService {
       if (preparedKeys.contains(key)) {
         return new MapEntryUpdateResult<>(
             MapEntryUpdateResult.Status.WRITE_LOCK,
-            commit.index(),
+            getCurrentIndex(),
             key,
             toVersioned(oldValue));
       }
       MapEntryValue newValue = new MapEntryValue(
           MapEntryValue.Type.VALUE,
-          commit.index(),
-          commit.value().value(),
-          commit.wallClockTime().unixTimestamp(),
-          commit.value().ttl());
-      putValue(commit.value().key(), newValue);
+          getCurrentIndex(),
+          value,
+          getWallClock().getTime().unixTimestamp(),
+          ttl);
+      putValue(key, newValue);
       Versioned<byte[]> result = toVersioned(newValue);
       publish(new MapEvent<>(MapEvent.Type.INSERT, "", key, result, null));
-      return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, commit.index(), key, null);
+      return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, getCurrentIndex(), key, null);
     }
     return new MapEntryUpdateResult<>(
         MapEntryUpdateResult.Status.PRECONDITION_FAILED,
-        commit.index(),
+        getCurrentIndex(),
         key,
         toVersioned(oldValue));
   }
 
-  /**
-   * Handles a putAndGet commit.
-   *
-   * @param commit putAndGet commit
-   * @return map entry update result
-   */
-  protected MapEntryUpdateResult<String, byte[]> putAndGet(Commit<? extends Put> commit) {
-    String key = commit.value().key();
+  @Override
+  public MapEntryUpdateResult<String, byte[]> putAndGet(String key, byte[] value, long ttl) {
     MapEntryValue oldValue = entries().get(key);
-    MapEntryValue newValue = new MapEntryValue(MapEntryValue.Type.VALUE, commit.index(), commit.value().value(), commit.wallClockTime().unixTimestamp(), commit.value().ttl());
+    MapEntryValue newValue = new MapEntryValue(MapEntryValue.Type.VALUE, getCurrentIndex(), value, getWallClock().getTime().unixTimestamp(), ttl);
 
     // If the value is null or a tombstone, this is an insert.
     // Otherwise, only update the value if it has changed to reduce the number of events.
@@ -496,29 +348,29 @@ public class ConsistentMapService extends AbstractPrimitiveService {
       if (preparedKeys.contains(key)) {
         return new MapEntryUpdateResult<>(
             MapEntryUpdateResult.Status.WRITE_LOCK,
-            commit.index(),
+            getCurrentIndex(),
             key,
             toVersioned(oldValue));
       }
-      putValue(commit.value().key(), newValue);
+      putValue(key, newValue);
       Versioned<byte[]> result = toVersioned(newValue);
       publish(new MapEvent<>(MapEvent.Type.INSERT, "", key, result, null));
-      return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, commit.index(), key, result);
+      return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, getCurrentIndex(), key, result);
     } else if (!valuesEqual(oldValue, newValue)) {
       // If the key has been locked by a transaction, return a WRITE_LOCK error.
       if (preparedKeys.contains(key)) {
         return new MapEntryUpdateResult<>(
             MapEntryUpdateResult.Status.WRITE_LOCK,
-            commit.index(),
+            getCurrentIndex(),
             key,
             toVersioned(oldValue));
       }
-      putValue(commit.value().key(), newValue);
+      putValue(key, newValue);
       Versioned<byte[]> result = toVersioned(newValue);
       publish(new MapEvent<>(MapEvent.Type.UPDATE, "", key, result, toVersioned(oldValue)));
-      return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, commit.index(), key, result);
+      return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, getCurrentIndex(), key, result);
     }
-    return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.NOOP, commit.index(), key, toVersioned(oldValue));
+    return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.NOOP, getCurrentIndex(), key, toVersioned(oldValue));
   }
 
   /**
@@ -557,35 +409,20 @@ public class ConsistentMapService extends AbstractPrimitiveService {
     return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, index, key, result);
   }
 
-  /**
-   * Handles a remove commit.
-   *
-   * @param commit remove commit
-   * @return map entry update result
-   */
-  protected MapEntryUpdateResult<String, byte[]> remove(Commit<? extends Remove> commit) {
-    return removeIf(commit.index(), commit.value().key(), v -> true);
+  @Override
+  public MapEntryUpdateResult<String, byte[]> remove(String key) {
+    return removeIf(getCurrentIndex(), key, v -> true);
   }
 
-  /**
-   * Handles a removeValue commit.
-   *
-   * @param commit removeValue commit
-   * @return map entry update result
-   */
-  protected MapEntryUpdateResult<String, byte[]> removeValue(Commit<? extends RemoveValue> commit) {
-    return removeIf(commit.index(), commit.value().key(), v ->
-        valuesEqual(v, new MapEntryValue(MapEntryValue.Type.VALUE, commit.index(), commit.value().value(), commit.wallClockTime().unixTimestamp(), 0)));
+  @Override
+  public MapEntryUpdateResult<String, byte[]> remove(String key, byte[] value) {
+    return removeIf(getCurrentIndex(), key, v ->
+        valuesEqual(v, new MapEntryValue(MapEntryValue.Type.VALUE, getCurrentIndex(), value, getWallClock().getTime().unixTimestamp(), 0)));
   }
 
-  /**
-   * Handles a removeVersion commit.
-   *
-   * @param commit removeVersion commit
-   * @return map entry update result
-   */
-  protected MapEntryUpdateResult<String, byte[]> removeVersion(Commit<? extends RemoveVersion> commit) {
-    return removeIf(commit.index(), commit.value().key(), v -> v.version() == commit.value().version());
+  @Override
+  public MapEntryUpdateResult<String, byte[]> remove(String key, long version) {
+    return removeIf(getCurrentIndex(), key, v -> v.version() == version);
   }
 
   /**
@@ -621,62 +458,43 @@ public class ConsistentMapService extends AbstractPrimitiveService {
     return new MapEntryUpdateResult<>(MapEntryUpdateResult.Status.OK, index, key, result);
   }
 
-  /**
-   * Handles a replace commit.
-   *
-   * @param commit replace commit
-   * @return map entry update result
-   */
-  protected MapEntryUpdateResult<String, byte[]> replace(Commit<? extends Replace> commit) {
-    MapEntryValue value = new MapEntryValue(
+  @Override
+  public MapEntryUpdateResult<String, byte[]> replace(String key, byte[] value) {
+    MapEntryValue entryValue = new MapEntryValue(
         MapEntryValue.Type.VALUE,
-        commit.index(),
-        commit.value().value(),
-        commit.wallClockTime().unixTimestamp(),
+        getCurrentIndex(),
+        value,
+        getWallClock().getTime().unixTimestamp(),
         0);
-    return replaceIf(commit.index(), commit.value().key(), value, v -> true);
+    return replaceIf(getCurrentIndex(), key, entryValue, v -> true);
   }
 
-  /**
-   * Handles a replaceValue commit.
-   *
-   * @param commit replaceValue commit
-   * @return map entry update result
-   */
-  protected MapEntryUpdateResult<String, byte[]> replaceValue(Commit<? extends ReplaceValue> commit) {
-    MapEntryValue value = new MapEntryValue(
+  @Override
+  public MapEntryUpdateResult<String, byte[]> replace(String key, byte[] oldValue, byte[] newValue) {
+    MapEntryValue entryValue = new MapEntryValue(
         MapEntryValue.Type.VALUE,
-        commit.index(),
-        commit.value().newValue(),
-        commit.wallClockTime().unixTimestamp(),
+        getCurrentIndex(),
+        newValue,
+        getWallClock().getTime().unixTimestamp(),
         0);
-    return replaceIf(commit.index(), commit.value().key(), value,
-        v -> valuesEqual(v.value(), commit.value().oldValue()));
+    return replaceIf(getCurrentIndex(), key, entryValue,
+        v -> valuesEqual(v.value(), oldValue));
   }
 
-  /**
-   * Handles a replaceVersion commit.
-   *
-   * @param commit replaceVersion commit
-   * @return map entry update result
-   */
-  protected MapEntryUpdateResult<String, byte[]> replaceVersion(Commit<? extends ReplaceVersion> commit) {
+  @Override
+  public MapEntryUpdateResult<String, byte[]> replace(String key, long oldVersion, byte[] newValue) {
     MapEntryValue value = new MapEntryValue(
         MapEntryValue.Type.VALUE,
-        commit.index(),
-        commit.value().newValue(),
-        commit.wallClockTime().unixTimestamp(),
+        getCurrentIndex(),
+        newValue,
+        getWallClock().getTime().unixTimestamp(),
         0);
-    return replaceIf(commit.index(), commit.value().key(), value,
-        v -> v.version() == commit.value().oldVersion());
+    return replaceIf(getCurrentIndex(), key, value,
+        v -> v.version() == oldVersion);
   }
 
-  /**
-   * Handles a clear commit.
-   *
-   * @return clear result
-   */
-  protected MapEntryUpdateResult.Status clear() {
+  @Override
+  public void clear() {
     Iterator<Map.Entry<String, MapEntryValue>> iterator = entries().entrySet().iterator();
     Map<String, MapEntryValue> entriesToAdd = new HashMap<>();
     while (iterator.hasNext()) {
@@ -695,68 +513,42 @@ public class ConsistentMapService extends AbstractPrimitiveService {
       }
     }
     entries().putAll(entriesToAdd);
-    return MapEntryUpdateResult.Status.OK;
   }
 
-  /**
-   * Handles a listen commit.
-   *
-   * @param session listen session
-   */
-  protected void listen(PrimitiveSession session) {
-    listeners.put(session.sessionId().id(), session);
+  @Override
+  public void addListener() {
+    listeners.put(getCurrentSession().sessionId().id(), getCurrentSession());
   }
 
-  /**
-   * Handles an unlisten commit.
-   *
-   * @param session unlisten session
-   */
-  protected void unlisten(PrimitiveSession session) {
-    listeners.remove(session.sessionId().id());
+  @Override
+  public void removeListener() {
+    listeners.remove(getCurrentSession().sessionId().id());
   }
 
-  /**
-   * Handles a begin commit.
-   *
-   * @param commit transaction begin commit
-   * @return transaction state version
-   */
-  protected long begin(Commit<? extends TransactionBegin> commit) {
-    long version = commit.index();
-    activeTransactions.put(commit.value().transactionId(), new TransactionScope(version));
+  @Override
+  public long begin(TransactionId transactionId) {
+    long version = getCurrentIndex();
+    activeTransactions.put(transactionId, new TransactionScope(version));
     return version;
   }
 
-  /**
-   * Handles an prepare and commit commit.
-   *
-   * @param commit transaction prepare and commit commit
-   * @return prepare result
-   */
-  protected PrepareResult prepareAndCommit(Commit<? extends TransactionPrepareAndCommit> commit) {
-    TransactionId transactionId = commit.value().transactionLog().transactionId();
-    PrepareResult prepareResult = prepare(commit);
+  @Override
+  public PrepareResult prepareAndCommit(TransactionLog<MapUpdate<String, byte[]>> transactionLog) {
+    TransactionId transactionId = transactionLog.transactionId();
+    PrepareResult prepareResult = prepare(transactionLog);
     TransactionScope transactionScope = activeTransactions.remove(transactionId);
     if (prepareResult == PrepareResult.OK) {
-      this.currentVersion = commit.index();
-      transactionScope = transactionScope.prepared(commit);
+      this.currentVersion = getCurrentIndex();
+      transactionScope = transactionScope.prepared(transactionLog);
       commitTransaction(transactionScope);
     }
     discardTombstones();
     return prepareResult;
   }
 
-  /**
-   * Handles an prepare commit.
-   *
-   * @param commit transaction prepare commit
-   * @return prepare result
-   */
-  protected PrepareResult prepare(Commit<? extends TransactionPrepare> commit) {
+  @Override
+  public PrepareResult prepare(TransactionLog<MapUpdate<String, byte[]>> transactionLog) {
     try {
-      TransactionLog<MapUpdate<String, byte[]>> transactionLog = commit.value().transactionLog();
-
       // Iterate through records in the transaction log and perform isolation checks.
       for (MapUpdate<String, byte[]> record : transactionLog.records()) {
         String key = record.key();
@@ -809,38 +601,30 @@ public class ConsistentMapService extends AbstractPrimitiveService {
       if (transactionScope == null) {
         activeTransactions.put(
             transactionLog.transactionId(),
-            new TransactionScope(transactionLog.version(), commit.value().transactionLog()));
+            new TransactionScope(transactionLog.version(), transactionLog));
         return PrepareResult.PARTIAL_FAILURE;
       } else {
         activeTransactions.put(
             transactionLog.transactionId(),
-            transactionScope.prepared(commit));
+            transactionScope.prepared(transactionLog));
         return PrepareResult.OK;
       }
     } catch (Exception e) {
-      getLogger().warn("Failure applying {}", commit, e);
       throw Throwables.propagate(e);
     }
   }
 
-  /**
-   * Handles an commit commit (ha!).
-   *
-   * @param commit transaction commit commit
-   * @return commit result
-   */
-  protected CommitResult commit(Commit<? extends TransactionCommit> commit) {
-    TransactionId transactionId = commit.value().transactionId();
+  @Override
+  public CommitResult commit(TransactionId transactionId) {
     TransactionScope transactionScope = activeTransactions.remove(transactionId);
     if (transactionScope == null) {
       return CommitResult.UNKNOWN_TRANSACTION_ID;
     }
 
     try {
-      this.currentVersion = commit.index();
+      this.currentVersion = getCurrentIndex();
       return commitTransaction(transactionScope);
     } catch (Exception e) {
-      getLogger().warn("Failure applying {}", commit, e);
       throw Throwables.propagate(e);
     } finally {
       discardTombstones();
@@ -923,14 +707,8 @@ public class ConsistentMapService extends AbstractPrimitiveService {
     return CommitResult.OK;
   }
 
-  /**
-   * Handles an rollback commit (ha!).
-   *
-   * @param commit transaction rollback commit
-   * @return rollback result
-   */
-  protected RollbackResult rollback(Commit<? extends TransactionRollback> commit) {
-    TransactionId transactionId = commit.value().transactionId();
+  @Override
+  public RollbackResult rollback(TransactionId transactionId) {
     TransactionScope transactionScope = activeTransactions.remove(transactionId);
     if (transactionScope == null) {
       return RollbackResult.UNKNOWN_TRANSACTION_ID;
@@ -950,7 +728,6 @@ public class ConsistentMapService extends AbstractPrimitiveService {
         discardTombstones();
       }
     }
-
   }
 
   /**
@@ -1144,11 +921,11 @@ public class ConsistentMapService extends AbstractPrimitiveService {
     /**
      * Returns a new transaction scope with a prepare commit.
      *
-     * @param commit the prepare commit
+     * @param transactionLog the transaction log
      * @return new transaction scope updated with the prepare commit
      */
-    TransactionScope prepared(Commit<? extends TransactionPrepare> commit) {
-      return new TransactionScope(version, commit.value().transactionLog());
+    TransactionScope prepared(TransactionLog<MapUpdate<String, byte[]>> transactionLog) {
+      return new TransactionScope(version, transactionLog);
     }
   }
 }

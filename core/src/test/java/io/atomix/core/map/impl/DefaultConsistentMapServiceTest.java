@@ -15,13 +15,14 @@
  */
 package io.atomix.core.map.impl;
 
-import io.atomix.core.map.impl.ConsistentMapOperations.Get;
-import io.atomix.core.map.impl.ConsistentMapOperations.Put;
+import io.atomix.core.election.LeaderElectionType;
+import io.atomix.primitive.PrimitiveId;
 import io.atomix.primitive.service.ServiceConfig;
+import io.atomix.primitive.service.ServiceContext;
 import io.atomix.primitive.service.impl.DefaultBackupInput;
 import io.atomix.primitive.service.impl.DefaultBackupOutput;
-import io.atomix.primitive.service.impl.DefaultCommit;
 import io.atomix.primitive.session.PrimitiveSession;
+import io.atomix.primitive.session.SessionId;
 import io.atomix.storage.buffer.Buffer;
 import io.atomix.storage.buffer.HeapBuffer;
 import io.atomix.utils.concurrent.Scheduled;
@@ -32,28 +33,32 @@ import org.junit.Test;
 
 import java.time.Duration;
 
-import static io.atomix.core.map.impl.ConsistentMapOperations.GET;
-import static io.atomix.core.map.impl.ConsistentMapOperations.PUT;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Consistent map service test.
  */
-public class ConsistentMapServiceTest {
+public class DefaultConsistentMapServiceTest {
 
   @Test
   @SuppressWarnings("unchecked")
   public void testSnapshot() throws Exception {
-    ConsistentMapService service = new TestConsistentMapService(new ServiceConfig());
+    ServiceContext context = mock(ServiceContext.class);
+    when(context.serviceType()).thenReturn(LeaderElectionType.instance());
+    when(context.serviceName()).thenReturn("test");
+    when(context.serviceId()).thenReturn(PrimitiveId.from(1));
+    when(context.wallClock()).thenReturn(new WallClock());
 
-    service.put(new DefaultCommit<>(
-        2,
-        PUT,
-        new Put("foo", "Hello world!".getBytes(), 1000),
-        mock(PrimitiveSession.class),
-        System.currentTimeMillis()));
+    PrimitiveSession session = mock(PrimitiveSession.class);
+    when(session.sessionId()).thenReturn(SessionId.from(1));
+
+    DefaultConsistentMapService service = new TestConsistentMapService(new ServiceConfig());
+    service.init(context);
+
+    service.put("foo", "Hello world!".getBytes());
 
     Buffer buffer = HeapBuffer.allocate();
     service.backup(new DefaultBackupOutput(buffer, service.serializer()));
@@ -61,19 +66,12 @@ public class ConsistentMapServiceTest {
     service = new TestConsistentMapService(new ServiceConfig());
     service.restore(new DefaultBackupInput(buffer.flip(), service.serializer()));
 
-    Versioned<byte[]> value = service.get(new DefaultCommit<>(
-        2,
-        GET,
-        new Get("foo"),
-        mock(PrimitiveSession.class),
-        System.currentTimeMillis()));
+    Versioned<byte[]> value = service.get("foo");
     assertNotNull(value);
     assertArrayEquals("Hello world!".getBytes(), value.value());
-
-    assertNotNull(service.entries().get("foo").timer);
   }
 
-  private static class TestConsistentMapService extends ConsistentMapService {
+  private static class TestConsistentMapService extends DefaultConsistentMapService {
     TestConsistentMapService(ServiceConfig config) {
       super(config);
     }

@@ -15,7 +15,7 @@
  */
 package io.atomix.core.set;
 
-import io.atomix.core.map.impl.ConsistentMapService;
+import io.atomix.core.map.impl.DefaultConsistentMapService;
 import io.atomix.core.set.impl.DelegatingDistributedSetBuilder;
 import io.atomix.core.set.impl.DistributedSetResource;
 import io.atomix.primitive.PrimitiveManagementService;
@@ -49,7 +49,7 @@ public class DistributedSetType<E> implements PrimitiveType<DistributedSetBuilde
 
   @Override
   public PrimitiveService newService(ServiceConfig config) {
-    return new ConsistentMapService(config);
+    return new DefaultConsistentMapService(config);
   }
 
   @Override

@@ -60,11 +60,10 @@ import static io.atomix.core.map.impl.ConsistentTreeMapOperations.SUB_MAP;
  * State machine corresponding to {@link ConsistentTreeMapProxy} backed by a
  * {@link TreeMap}.
  */
-public class ConsistentTreeMapService extends ConsistentMapService {
+public class ConsistentTreeMapService extends DefaultConsistentMapService {
 
   private static final Serializer SERIALIZER = Serializer.using(KryoNamespace.builder()
       .register(KryoNamespaces.BASIC)
-      .register(ConsistentMapOperations.NAMESPACE)
       .register(ConsistentTreeMapOperations.NAMESPACE)
       .register(ConsistentMapEvents.NAMESPACE)
       .nextId(KryoNamespaces.BEGIN_USER_CUSTOM_ID + 150)
